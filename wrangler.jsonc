@@ -1,0 +1,14 @@
+{
+	"name": "quick-quiz",
+	"compatibility_date": "2026-01-16",
+	"assets": {
+		"directory": "./dist"
+	},
+	"main": "worker/index.js",
+	"kv_namespaces": [
+		{
+			"binding": "RATE_LIMIT_KV",
+			"id": "6004cd4706cc437187e04287b7ebfc63"
+		}
+	]
+}
