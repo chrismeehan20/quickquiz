@@ -44,6 +44,24 @@ function generateClientId() {
 
 const CLIENT_ID = generateClientId();
 
+const MODEL_HAIKU = 'claude-haiku-3-5-20241022';
+const MODEL_SONNET = 'claude-sonnet-4-20250514';
+
+function selectModel(task, context = {}) {
+  switch (task) {
+    case 'parse': {
+      const { hasImages, contentLength } = context;
+      if (hasImages) return MODEL_SONNET;
+      if (contentLength > 50000) return MODEL_SONNET;
+      return MODEL_HAIKU;
+    }
+    case 'generate':
+    case 'answer_key':
+    default:
+      return MODEL_SONNET;
+  }
+}
+
 const generateId = () => Math.random().toString(36).substr(2, 9);
 
 const QUESTION_TYPES = {
@@ -95,15 +113,15 @@ async function extractImagesFromDocx(file) {
         mediaFiles.push({ path: relativePath, entry: zipEntry });
       }
     });
-    for (const { path, entry } of mediaFiles) {
+    const imageResults = await Promise.all(mediaFiles.map(async ({ path, entry }) => {
       try {
         const imageData = await entry.async('arraybuffer');
         const mimeType = detectImageType(imageData);
-        if (mimeType === 'image/emf' || mimeType === 'image/wmf') continue;
+        if (mimeType === 'image/emf' || mimeType === 'image/wmf') return null;
         const base64 = arrayBufferToBase64(imageData);
         const dataUrl = `data:${mimeType};base64,${base64}`;
         const dimensions = await getImageDimensions(dataUrl);
-        images.push({
+        return {
           id: generateId(),
           filename: path.split('/').pop(),
           dataUrl,
@@ -112,11 +130,13 @@ async function extractImagesFromDocx(file) {
           width: dimensions.width,
           height: dimensions.height,
           source: 'docx',
-        });
+        };
       } catch (imgError) {
         console.error(`Error extracting image ${path}:`, imgError);
+        return null;
       }
-    }
+    }));
+    images.push(...imageResults.filter(Boolean));
   } catch (error) {
     console.error('Error extracting images from DOCX:', error);
   }
@@ -365,8 +385,13 @@ async function extractTextFromPdf(file, pageStart = null, pageEnd = null) {
     const startPage = pageStart && pageStart > 0 ? Math.min(pageStart, numPages) : 1;
     const endPage = pageEnd && pageEnd > 0 ? Math.min(pageEnd, numPages) : numPages;
 
+    const pageNumbers = [];
     for (let i = startPage; i <= endPage; i++) {
-      const page = await pdf.getPage(i);
+      pageNumbers.push(i);
+    }
+
+    const pageTexts = await Promise.all(pageNumbers.map(async (pageNum) => {
+      const page = await pdf.getPage(pageNum);
       const textContent = await page.getTextContent();
 
       // Sort items by position to maintain reading order
@@ -390,10 +415,10 @@ async function extractTextFromPdf(file, pageStart = null, pageEnd = null) {
         lastY = y;
       }
 
-      fullText += pageText + '\n\n--- Page ' + i + ' ---\n\n';
-    }
+      return pageText + '\n\n--- Page ' + pageNum + ' ---\n\n';
+    }));
 
-    return fullText.trim();
+    return pageTexts.join('').trim();
   } catch (error) {
     console.error('Error extracting text from PDF:', error);
     throw new Error('Failed to extract text from PDF. The file may be scanned or corrupted.');
@@ -1722,8 +1747,13 @@ export default function QuickQuiz() {
           imageContext = `\n\nNOTE: This document contains ${extractedImages.length} embedded images. They are referenced as [IMAGE_1], [IMAGE_2], etc. When you detect that a question references an image, include an "imageRefs" array with the image numbers.`;
         }
 
+        const parseModel = selectModel('parse', {
+          hasImages: extractedImages.length > 0,
+          contentLength: content.length,
+        });
+
         const data = await callAnthropicProxy({
-          model: 'claude-sonnet-4-20250514',
+          model: parseModel,
           max_tokens: 8000,
           messages: [
             {
@@ -2230,7 +2260,7 @@ IMPORTANT: Return ONLY the JSON object, no additional text before or after.`;
       const prompt = buildGenerationPrompt(sourceText, generationConfig);
 
       const result = await callAnthropicProxy({
-        model: 'claude-sonnet-4-20250514',
+        model: MODEL_SONNET,
         max_tokens: 8000,
         messages: [{ role: 'user', content: prompt }],
       });
@@ -3977,8 +4007,8 @@ function AnswerKeyModal({ quiz, onApply, onClose, apiKey, callAnthropicProxy }) 
       }).join('\n\n');
 
       const data = await callAnthropicProxy({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 2000,
+        model: MODEL_SONNET,
+        max_tokens: 1000,
         messages: [{
           role: 'user',
           content: `You are helping a teacher create an answer key. For each question below, provide the most likely correct answer.
